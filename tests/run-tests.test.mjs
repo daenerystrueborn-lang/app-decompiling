@@ -552,6 +552,7 @@ test('End-to-end HTTP Server, Signed MediaProxy + Real-Time TS Unwrap + /api/dow
 
 test('Normalized catalog, Demo HLS showcase, /ping, /api/health, and safe image proxy', async () => {
   const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const webpBytes = Buffer.from('RIFF\x12\x00\x00\x00WEBPVP8 ');
   const mockFetch = async (url) => {
     const u = String(url);
     if (u.includes('/api/v1/app/home')) {
@@ -562,6 +563,19 @@ test('Normalized catalog, Demo HLS showcase, /ping, /api/health, and safe image 
             title: 'Frieren: Beyond Journey\'s End',
             poster: 'https://img.cdn.example/frieren.png',
             episodesCount: 28,
+          },
+          {
+            id: 102,
+            anime: {
+              id: 102,
+              title: 'Dandadan',
+              poster_url: '/posters/dandadan.webp',
+            },
+          },
+          {
+            id: 103,
+            title: 'Bleach',
+            coverImage: { large: 'http://legacy.cdn.example/bleach.png' },
           },
         ],
       });
@@ -578,6 +592,9 @@ test('Normalized catalog, Demo HLS showcase, /ping, /api/health, and safe image 
     }
     if (u === 'https://img.cdn.example/frieren.png') {
       return makeFakeResponse(pngBytes, { headers: { 'content-type': 'image/png' } });
+    }
+    if (u === 'https://app.anifam.net/posters/dandadan.webp') {
+      return makeFakeResponse(webpBytes, { headers: { 'content-type': 'application/octet-stream' } });
     }
     throw new Error(`Unexpected URL: ${u}`);
   };
@@ -598,15 +615,26 @@ test('Normalized catalog, Demo HLS showcase, /ping, /api/health, and safe image 
     assert.equal(headPing.status, 200);
 
     const anifamHome = await (await fetch(`${baseUrl}/api/catalog/home?provider=anifam`)).json();
-    assert.equal(anifamHome.items.length, 1);
+    assert.equal(anifamHome.items.length, 3);
     assert.equal(anifamHome.items[0].title, "Frieren: Beyond Journey's End");
-    assert.ok(anifamHome.items[0].poster.startsWith('/api/proxy/image?url='));
+    assert.equal(anifamHome.items[0].poster, 'https://img.cdn.example/frieren.png');
+    assert.ok(anifamHome.items[0].posterProxy.startsWith('/api/proxy/image?url='));
+    assert.equal(anifamHome.items[1].title, 'Dandadan');
+    assert.equal(anifamHome.items[1].poster, 'https://app.anifam.net/posters/dandadan.webp');
+    assert.ok(anifamHome.items[1].posterProxy.startsWith('/api/proxy/image?url='));
+    // Legacy http:// posters stay routed via /api/proxy/image to avoid mixed-content blocks
+    assert.ok(anifamHome.items[2].poster.startsWith('/api/proxy/image?url='));
 
     const miruHome = await (await fetch(`${baseUrl}/api/catalog/home?provider=mirudl`)).json();
     assert.equal(miruHome.items[0].title, 'Solo Leveling');
 
     const demoHome = await (await fetch(`${baseUrl}/api/catalog/home?provider=demo`)).json();
     assert.equal(demoHome.items[0].id, 'demo-bbb');
+    assert.equal(demoHome.items[0].poster, '/api/demo/poster-bbb.svg');
+    const demoPosterRes = await fetch(`${baseUrl}${demoHome.items[0].poster}`);
+    assert.equal(demoPosterRes.status, 200);
+    assert.match(demoPosterRes.headers.get('content-type'), /image\/svg\+xml/);
+
     const demoPlay = await (await fetch(`${baseUrl}/api/demo/play?episodeId=demo-1&quality=720p`)).json();
     assert.equal(demoPlay.status, 'ready');
     assert.ok(demoPlay.proxyHlsUrl.startsWith('/api/proxy/hls?token='));
@@ -616,10 +644,15 @@ test('Normalized catalog, Demo HLS showcase, /ping, /api/health, and safe image 
     assert.equal(vttRes.status, 200);
     assert.ok((await vttRes.text()).includes('WEBVTT'));
 
-    // Safe image proxy allows valid https public image and blocks private/local SSRF targets
-    const imgRes = await fetch(`${baseUrl}${anifamHome.items[0].poster}`);
+    // Safe image proxy allows valid https public image + octet-stream .webp inference, blocks SSRF
+    const imgRes = await fetch(`${baseUrl}${anifamHome.items[0].posterProxy}`);
     assert.equal(imgRes.status, 200);
     assert.ok(Buffer.from(await imgRes.arrayBuffer()).equals(pngBytes));
+
+    const webpRes = await fetch(`${baseUrl}${anifamHome.items[1].posterProxy}`);
+    assert.equal(webpRes.status, 200);
+    assert.equal(webpRes.headers.get('content-type'), 'image/webp');
+    assert.ok(Buffer.from(await webpRes.arrayBuffer()).equals(webpBytes));
 
     const blockedImg = await fetch(`${baseUrl}/api/proxy/image?url=${encodeURIComponent('http://127.0.0.1:8080/secret.png')}`);
     assert.equal(blockedImg.status, 400);
@@ -633,4 +666,43 @@ test('Normalized catalog, Demo HLS showcase, /ping, /api/health, and safe image 
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test('AnimeSitePlayer mounts Mode 3 iframe without sandbox attribute by default', async () => {
+  const { AnimeSitePlayer } = await import('../public/js/site-player.js');
+  const attrs = new Map([['sandbox', 'allow-scripts']]);
+  const iframeEl = {
+    hidden: true,
+    src: '',
+    referrerPolicy: '',
+    setAttribute: (k, v) => attrs.set(k, v),
+    removeAttribute: (k) => attrs.delete(k),
+    getAttribute: (k) => attrs.get(k) ?? null,
+  };
+  const videoEl = {
+    hidden: false,
+    pause: () => {},
+    removeAttribute: () => {},
+    load: () => {},
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+
+  const player = new AnimeSitePlayer({ videoEl, iframeEl });
+  player._mountIframe('https://megaplay.buzz/stream/s-2/1234/sub');
+  assert.equal(attrs.has('sandbox'), false);
+  assert.equal(iframeEl.hidden, false);
+  assert.equal(videoEl.hidden, true);
+  assert.equal(iframeEl.src, 'https://megaplay.buzz/stream/s-2/1234/sub');
+  assert.equal(iframeEl.referrerPolicy, 'origin');
+  assert.ok(attrs.get('allow').includes('fullscreen'));
+
+  const sandboxedPlayer = new AnimeSitePlayer({
+    videoEl,
+    iframeEl,
+    iframeSandbox: 'allow-scripts allow-same-origin',
+  });
+  sandboxedPlayer._mountIframe('https://trusted.embed.example/1');
+  assert.equal(attrs.get('sandbox'), 'allow-scripts allow-same-origin');
 });

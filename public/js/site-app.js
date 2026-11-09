@@ -52,6 +52,7 @@ const el = {
   btnDlServer: document.getElementById('btn-dl-server'),
   btnDlBrowser: document.getElementById('btn-dl-browser'),
   btnDlCancel: document.getElementById('btn-dl-cancel'),
+  openEmbedLink: document.getElementById('open-embed-link'),
   dlProgressWrap: document.getElementById('dl-progress-wrap'),
   dlProgress: document.getElementById('dl-progress'),
   dlProgressText: document.getElementById('dl-progress-text'),
@@ -70,6 +71,13 @@ const player = new AnimeSitePlayer({
     const canDownload = Boolean(state.downloadUrl || state.proxyHlsUrl);
     el.btnDlServer.disabled = !canDownload;
     el.btnDlBrowser.disabled = !state.proxyHlsUrl;
+    if (state.mode === 'iframe' && state.embedUrl) {
+      el.openEmbedLink.href = state.embedUrl;
+      el.openEmbedLink.hidden = false;
+    } else {
+      el.openEmbedLink.hidden = true;
+      el.openEmbedLink.removeAttribute('href');
+    }
     logActivity(
       `Stream ${state.status}: ${state.provider} (${state.mode || 'unknown'}${state.unwrapTs ? ', TS-unwrap ON' : ''})`
     );
@@ -178,11 +186,20 @@ function renderAnimeList(items, heading = 'Catalog') {
     const img = document.createElement('img');
     img.className = 'poster';
     img.loading = 'lazy';
+    img.referrerPolicy = 'no-referrer';
     img.alt = item.title;
-    img.src = item.poster || POSTER_FALLBACK;
+    let triedProxy = false;
     img.addEventListener('error', () => {
-      img.src = POSTER_FALLBACK;
+      if (!triedProxy && item.posterProxy && img.getAttribute('src') !== item.posterProxy) {
+        triedProxy = true;
+        img.src = item.posterProxy;
+        return;
+      }
+      if (img.src !== POSTER_FALLBACK) {
+        img.src = POSTER_FALLBACK;
+      }
     });
+    img.src = item.poster || item.posterProxy || POSTER_FALLBACK;
 
     const meta = document.createElement('div');
     meta.className = 'card-meta';

@@ -7,7 +7,7 @@
  * The 3 modes:
  *  1. `hls`       — Direct HLS (`kind === "hls"`), native player + `mediaHeaders` + mirror rotation (`V1.j`)
  *  2. `resolved`  — Native-resolved iframe (`V1.b`): `POST episodes/{id}/resolve` -> native HLS + `unwrapTs: true`
- *  3. `iframe`    — WebView/iframe embed fallback (`V1.c`): sandboxed embed URL (`embedUrl` or `url`)
+ *  3. `iframe`    — WebView/iframe embed fallback (`V1.c`): embed URL (`embedUrl` or `url`) rendered in unsandboxed `<iframe>`
  *
  * Fallback pipeline (`J1.i` / `J1.h`):
  *  - On error/stall (`20s` buffering or `9s` iframe resolve stall), places failing source on `300,000 ms` cooldown
