@@ -1,0 +1,178 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "MiruDL + AniFam Unified Streaming & Download Integration API",
+    "version": "1.0.0",
+    "description": "Backend proxy, 3-mode AniFam playback resolver, Kyoto HMAC signer, spoofed-image MPEG-TS unwrapper, and concurrent HLS download streaming server."
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Server health & active AniFam failover domain",
+        "responses": {
+          "200": { "description": "Server is healthy" }
+        }
+      }
+    },
+    "/api/mirudl/home": {
+      "get": {
+        "summary": "Fetch AniLab home catalog sections",
+        "responses": { "200": { "description": "Home sections" } }
+      }
+    },
+    "/api/mirudl/search": {
+      "get": {
+        "summary": "Search AniLab catalog and enrich anime titles",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
+        ],
+        "responses": { "200": { "description": "Matching anime items" } }
+      }
+    },
+    "/api/mirudl/episodes/{animeId}": {
+      "get": {
+        "summary": "List episodes and language tracks from Kyoto Player",
+        "parameters": [
+          { "name": "animeId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Episode list" } }
+      }
+    },
+    "/api/mirudl/play": {
+      "get": {
+        "summary": "Resolve MiruDL master HLS + quality selection + signed proxy & download URLs",
+        "parameters": [
+          { "name": "episodeId", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "lang", "in": "query", "schema": { "type": "string", "default": "jpn" } },
+          { "name": "quality", "in": "query", "schema": { "type": "string", "default": "1080p" } }
+        ],
+        "responses": { "200": { "description": "MiruDL playback descriptor" } }
+      }
+    },
+    "/api/anifam/search": {
+      "get": {
+        "summary": "Search AniFam catalog across failover domains",
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } },
+          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
+        ],
+        "responses": { "200": { "description": "AniFam search response" } }
+      }
+    },
+    "/api/anifam/episodes/{animeId}": {
+      "get": {
+        "summary": "List AniFam episodes for an anime",
+        "parameters": [
+          { "name": "animeId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "EpisodesDto" } }
+      }
+    },
+    "/api/anifam/play": {
+      "post": {
+        "summary": "Start 3-mode AniFam playback session (Direct HLS / Resolved Iframe / Web Embed)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["episodeId"],
+                "properties": {
+                  "episodeId": { "type": "integer" },
+                  "track": { "type": "string", "default": "sub" },
+                  "serverIndex": { "type": "integer" },
+                  "preferredServerKey": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Normalized AniFam playback session with server labels & proxy URLs" } }
+      }
+    },
+    "/api/anifam/resolve": {
+      "post": {
+        "summary": "Resolve an AniFam iframe serverId to a native HLS stream with unwrapTs enabled",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["episodeId", "serverId"],
+                "properties": {
+                  "episodeId": { "type": "integer" },
+                  "serverId": { "type": "integer" },
+                  "track": { "type": "string", "default": "sub" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "Resolved HLS playback payload" } }
+      }
+    },
+    "/api/anifam/download-grant": {
+      "post": {
+        "summary": "Request an AniFam download grant (`POST episodes/{id}/download`) and signed `/api/download` URL",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["episodeId"],
+                "properties": {
+                  "episodeId": { "type": "integer" },
+                  "track": { "type": "string", "default": "sub" },
+                  "quality": { "type": "string", "default": "1080p" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "200": { "description": "DownloadGrantDto + signed downloadUrl" } }
+      }
+    },
+    "/api/proxy/hls": {
+      "get": {
+        "summary": "Fetch and rewrite an M3U8 playlist with custom upstream headers and mirror fallback",
+        "parameters": [
+          { "name": "token", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Rewritten application/vnd.apple.mpegurl playlist" }
+        }
+      }
+    },
+    "/api/proxy/segment": {
+      "get": {
+        "summary": "Proxy an HLS media segment and unwrap spoofed PNG/JPEG/GIF/RIFF/BMP prefixes if enabled",
+        "parameters": [
+          { "name": "token", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Clean MPEG-TS / fMP4 media stream" }
+        }
+      }
+    },
+    "/api/download": {
+      "get": {
+        "summary": "Stream a concurrently downloaded, quality-selected, TS-unwrapped episode to the browser",
+        "parameters": [
+          { "name": "token", "in": "query", "schema": { "type": "string" } },
+          { "name": "provider", "in": "query", "schema": { "type": "string", "enum": ["mirudl", "anifam"] } },
+          { "name": "episodeId", "in": "query", "schema": { "type": "string" } },
+          { "name": "quality", "in": "query", "schema": { "type": "string", "default": "1080p" } },
+          { "name": "title", "in": "query", "schema": { "type": "string" } },
+          { "name": "concurrency", "in": "query", "schema": { "type": "integer", "default": 16 } }
+        ],
+        "responses": {
+          "200": { "description": "video/mp4 attachment stream" }
+        }
+      }
+    }
+  }
+}

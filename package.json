@@ -1,0 +1,36 @@
+{
+  "name": "anime-stream-dl-sdk",
+  "version": "1.0.0",
+  "description": "Web streaming proxy, 3-mode playback orchestrator, TS image-header unwrapper, and concurrent HLS downloader extracted from MiruDL v2.2.1 and AniFam v0.2.9.",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": "./src/index.js",
+    "./mirudl": "./src/providers/mirudl-client.js",
+    "./anifam": "./src/providers/anifam-client.js",
+    "./anifam/playback": "./src/providers/anifam-playback.js",
+    "./hls": "./src/utils/hls-parser.js",
+    "./ts-unwrapper": "./src/utils/ts-unwrapper.js",
+    "./downloader": "./src/download/hls-downloader.js",
+    "./proxy": "./src/proxy/media-proxy.js",
+    "./server": "./src/server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "keywords": [
+    "hls",
+    "streaming",
+    "downloader",
+    "mpeg-ts",
+    "proxy",
+    "mirudl",
+    "anifam"
+  ],
+  "license": "MIT"
+}
