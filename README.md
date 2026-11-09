@@ -34,10 +34,11 @@ Complete documentation and production-ready JavaScript/TypeScript integration su
 ├── examples/
 │   └── react-player-hook.jsx          # Drop-in React / Next.js widget
 ├── public/
-│   ├── index.html                     # Live interactive demo web app
+│   ├── index.html                     # Active anime stream & download web UI
 │   ├── styles.css
 │   └── js/
-│       ├── site-player.js             # Browser AnimeSitePlayer class
+│       ├── site-app.js                # Interactive catalog, episodes, activity log & player wiring
+│       ├── site-player.js             # Browser AnimeSitePlayer class (AniFam, MiruDL & Demo HLS)
 │       └── web-downloader.js          # Browser WebEpisodeDownloader class
 ├── schemas/
 │   └── openapi.json                   # OpenAPI 3.1.0 API specification

@@ -64,4 +64,4 @@ export {
 } from './download/hls-downloader.js';
 
 export { MediaProxy } from './proxy/media-proxy.js';
-export { createAppServer } from './server.js';
+export { createAppServer, isSafePublicHttpsUrl } from './server.js';

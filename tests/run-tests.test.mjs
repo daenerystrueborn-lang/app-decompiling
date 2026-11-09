@@ -539,10 +539,97 @@ test('End-to-end HTTP Server, Signed MediaProxy + Real-Time TS Unwrap + /api/dow
     const dlBytes = Buffer.from(await dlRes.arrayBuffer());
     assert.ok(dlBytes.equals(Buffer.concat([seg0Ts, seg1Ts])));
 
-    // 8) Static frontend HTML loads
+    // 8) Static frontend HTML + JS loads
     const htmlRes = await fetch(`${baseUrl}/`);
     assert.equal(htmlRes.status, 200);
-    assert.ok((await htmlRes.text()).includes('MiruDL + AniFam Web Integration'));
+    const htmlText = await htmlRes.text();
+    assert.ok(htmlText.includes('MiruDL + AniFam'));
+    assert.ok(htmlText.includes('/js/site-app.js'));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('Normalized catalog, Demo HLS showcase, /ping, /api/health, and safe image proxy', async () => {
+  const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const mockFetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/api/v1/app/home')) {
+      return makeFakeResponse({
+        trending: [
+          {
+            id: 101,
+            title: 'Frieren: Beyond Journey\'s End',
+            poster: 'https://img.cdn.example/frieren.png',
+            episodesCount: 28,
+          },
+        ],
+      });
+    }
+    if (u.includes('anilab2.amdapi.click/api/home')) {
+      return makeFakeResponse({
+        sections: [
+          { name: 'Popular', posts: [{ id: 202, poster: 'https://img.cdn.example/solo.png' }] },
+        ],
+      });
+    }
+    if (u.includes('anilab2.amdapi.click/api/post?id=202')) {
+      return makeFakeResponse({ id: 202, title: 'Solo Leveling' });
+    }
+    if (u === 'https://img.cdn.example/frieren.png') {
+      return makeFakeResponse(pngBytes, { headers: { 'content-type': 'image/png' } });
+    }
+    throw new Error(`Unexpected URL: ${u}`);
+  };
+
+  const { server } = createAppServer({ fetchImpl: mockFetch });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  try {
+    const pingRes = await fetch(`${baseUrl}/ping`);
+    assert.equal(pingRes.status, 200);
+    assert.equal((await pingRes.json()).ok, true);
+
+    const headRoot = await fetch(`${baseUrl}/`, { method: 'HEAD' });
+    assert.equal(headRoot.status, 200);
+    const headPing = await fetch(`${baseUrl}/ping`, { method: 'HEAD' });
+    assert.equal(headPing.status, 200);
+
+    const anifamHome = await (await fetch(`${baseUrl}/api/catalog/home?provider=anifam`)).json();
+    assert.equal(anifamHome.items.length, 1);
+    assert.equal(anifamHome.items[0].title, "Frieren: Beyond Journey's End");
+    assert.ok(anifamHome.items[0].poster.startsWith('/api/proxy/image?url='));
+
+    const miruHome = await (await fetch(`${baseUrl}/api/catalog/home?provider=mirudl`)).json();
+    assert.equal(miruHome.items[0].title, 'Solo Leveling');
+
+    const demoHome = await (await fetch(`${baseUrl}/api/catalog/home?provider=demo`)).json();
+    assert.equal(demoHome.items[0].id, 'demo-bbb');
+    const demoPlay = await (await fetch(`${baseUrl}/api/demo/play?episodeId=demo-1&quality=720p`)).json();
+    assert.equal(demoPlay.status, 'ready');
+    assert.ok(demoPlay.proxyHlsUrl.startsWith('/api/proxy/hls?token='));
+    assert.ok(demoPlay.downloadUrl.startsWith('/api/download?token='));
+
+    const vttRes = await fetch(`${baseUrl}/api/demo/subs.vtt`);
+    assert.equal(vttRes.status, 200);
+    assert.ok((await vttRes.text()).includes('WEBVTT'));
+
+    // Safe image proxy allows valid https public image and blocks private/local SSRF targets
+    const imgRes = await fetch(`${baseUrl}${anifamHome.items[0].poster}`);
+    assert.equal(imgRes.status, 200);
+    assert.ok(Buffer.from(await imgRes.arrayBuffer()).equals(pngBytes));
+
+    const blockedImg = await fetch(`${baseUrl}/api/proxy/image?url=${encodeURIComponent('http://127.0.0.1:8080/secret.png')}`);
+    assert.equal(blockedImg.status, 400);
+    const blockedMetadata = await fetch(`${baseUrl}/api/proxy/image?url=${encodeURIComponent('https://169.254.169.254/latest')}`);
+    assert.equal(blockedMetadata.status, 400);
+
+    const health = await (await fetch(`${baseUrl}/api/health`)).json();
+    assert.equal(health.ok, true);
+    assert.ok(health.stats.requestsServed >= 7);
+    assert.equal(health.stats.streamsResolved, 1);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
