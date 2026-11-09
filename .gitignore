@@ -1,0 +1,9 @@
+*.apk
+decompiled/
+node_modules/
+downloads/
+.env
+.env.local
+*.part
+*.ts.tmp
+.DS_Store
