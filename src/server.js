@@ -1,15 +1,16 @@
 /**
  * Unified Node HTTP Integration Server
  *
- * Exposes MiruDL + AniFam catalog, playback, 3-mode resolver, signed HLS/segment proxy
- * (with real-time AniFam TS image-header unwrapping), concurrent HLS streaming downloads,
- * and static web frontend demo under `public/`.
+ * Exposes MiruDL + AniFam + Demo HLS catalog, playback, 3-mode resolver,
+ * signed HLS/segment/image proxy (with real-time AniFam TS image-header unwrapping),
+ * concurrent HLS streaming downloads, and static web frontend under `public/`.
  */
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
 import { MiruDLClient, MIRUDL_CONSTANTS } from './providers/mirudl-client.js';
@@ -41,12 +42,51 @@ const MIME_TYPES = {
   '.vtt': 'text/vtt; charset=utf-8',
 };
 
-function sendJson(res, status, data) {
+const DEMO_ANIME = [
+  {
+    id: 'demo-bbb',
+    title: 'Big Buck Bunny (Demo HLS Showcase)',
+    subtitle: 'Multi-Quality Adaptive HLS • 1080p / 720p / 480p / 360p',
+    poster: '',
+    episodes: [
+      {
+        id: 'demo-1',
+        number: 1,
+        title: 'Full Feature Showcase (Mux Adaptive HLS)',
+        streamUrl: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+      },
+      {
+        id: 'demo-2',
+        number: 2,
+        title: 'Alternate Demo Stream (Tears of Steel)',
+        streamUrl: 'https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8',
+      },
+    ],
+  },
+];
+
+const DEMO_VTT = `WEBVTT
+
+00:00.500 --> 00:04.000
+Welcome to the MiruDL + AniFam Web Streaming & Download Demo.
+
+00:04.000 --> 00:12.000
+Intro skip cue active — click "Skip Intro" or download this stream as MP4.
+
+00:12.000 --> 00:25.000
+Served via the signed Node MediaProxy and concurrent HLS segment pipeline.
+`;
+
+function sendJson(res, status, data, method = 'GET') {
   res.statusCode = status;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (method === 'HEAD') {
+    res.end();
+    return;
+  }
   res.end(JSON.stringify(data));
 }
 
@@ -60,6 +100,158 @@ async function readJsonBody(req) {
   }
   const raw = Buffer.concat(chunks).toString('utf8').trim();
   return raw ? JSON.parse(raw) : {};
+}
+
+export function isSafePublicHttpsUrl(rawUrl) {
+  try {
+    const u = new URL(String(rawUrl));
+    if (u.protocol !== 'https:') return false;
+    const host = u.hostname.toLowerCase();
+    if (!host || !host.includes('.')) return false;
+    if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return false;
+    if (host.startsWith('[') || host.includes(':')) return false; // skip IPv6 literals
+    const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+    if (ipv4) {
+      const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+      if (a === 10 || a === 127 || a === 0) return false;
+      if (a === 169 && b === 254) return false;
+      if (a === 192 && b === 168) return false;
+      if (a === 172 && b >= 16 && b <= 31) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function toProxiedPoster(url) {
+  if (!url || !String(url).trim()) return '';
+  const s = String(url).trim();
+  if (s.startsWith('/')) return s;
+  if (isSafePublicHttpsUrl(s)) {
+    return `/api/proxy/image?url=${encodeURIComponent(s)}`;
+  }
+  return '';
+}
+
+function normalizeAnimeItem(raw, fallbackIdx = 0) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = raw.id ?? raw.animeId ?? raw.slug ?? raw.malId ?? String(fallbackIdx + 1);
+  const title =
+    raw.title ||
+    raw.name ||
+    raw.englishTitle ||
+    raw.romajiTitle ||
+    raw.slug ||
+    `Anime #${id}`;
+  const rawPoster =
+    raw.poster ||
+    raw.thumbnail ||
+    raw.cover ||
+    raw.coverImage ||
+    raw.image ||
+    raw.posterUrl ||
+    raw.banner ||
+    raw.img ||
+    '';
+  const epCount = raw.episodesCount ?? raw.totalEpisodes ?? raw.episodes_count ?? raw.subCount ?? null;
+  const subtitle =
+    raw.subtitle ||
+    (epCount ? `${epCount} eps` : raw.type || raw.year || raw.status || '');
+
+  return {
+    id: String(id),
+    title: String(title),
+    subtitle: subtitle ? String(subtitle) : '',
+    poster: toProxiedPoster(rawPoster),
+  };
+}
+
+function extractItemArray(payload) {
+  if (!payload) return [];
+  if (Array.isArray(payload)) return payload;
+  for (const key of ['results', 'items', 'data', 'posts', 'anime', 'list', 'records', 'entries']) {
+    if (Array.isArray(payload[key])) return payload[key];
+    if (payload[key] && typeof payload[key] === 'object') {
+      for (const nested of ['items', 'results', 'list', 'posts', 'anime']) {
+        if (Array.isArray(payload[key][nested])) return payload[key][nested];
+      }
+    }
+  }
+  return [];
+}
+
+function normalizeCatalogSections(payload, provider) {
+  const sections = [];
+  const pushSection = (title, rawList) => {
+    const seen = new Set();
+    const items = [];
+    for (let i = 0; i < (rawList || []).length; i++) {
+      const item = normalizeAnimeItem(rawList[i], i);
+      if (!item || seen.has(item.id)) continue;
+      seen.add(item.id);
+      items.push(item);
+    }
+    if (items.length) sections.push({ title, items });
+  };
+
+  if (Array.isArray(payload?.sections)) {
+    for (const sec of payload.sections) {
+      pushSection(sec.title || sec.name || 'Featured', sec.posts || sec.items || sec.data || []);
+    }
+  } else if (Array.isArray(payload?.shelves)) {
+    for (const shelf of payload.shelves) {
+      pushSection(shelf.title || shelf.name || 'Featured', shelf.items || shelf.data || []);
+    }
+  } else if (payload && typeof payload === 'object') {
+    const namedShelves = [
+      ['spotlight', 'Spotlight'],
+      ['trending', 'Trending Now'],
+      ['popular', 'Popular'],
+      ['latest', 'Latest Episodes'],
+      ['recent', 'Recently Updated'],
+      ['recentlyUpdated', 'Recently Updated'],
+      ['airing', 'Currently Airing'],
+      ['topAiring', 'Top Airing'],
+      ['recommended', 'Recommended'],
+    ];
+    for (const [key, label] of namedShelves) {
+      if (Array.isArray(payload[key]) && payload[key].length) {
+        pushSection(label, payload[key]);
+      }
+    }
+    if (!sections.length) {
+      const flat = extractItemArray(payload);
+      if (flat.length) pushSection('Catalog', flat);
+    }
+  }
+
+  const allItems = [];
+  const seenIds = new Set();
+  for (const sec of sections) {
+    for (const it of sec.items) {
+      if (!seenIds.has(it.id)) {
+        seenIds.add(it.id);
+        allItems.push(it);
+      }
+    }
+  }
+
+  return { provider, sections, items: allItems };
+}
+
+function normalizeEpisodesPayload(payload) {
+  const list = Array.isArray(payload)
+    ? payload
+    : payload?.episodes || payload?.list || payload?.items || payload?.data || [];
+  return (Array.isArray(list) ? list : [])
+    .filter(Boolean)
+    .map((ep, idx) => ({
+      id: String(ep.id ?? ep.episodeId ?? idx + 1),
+      number: ep.number ?? ep.episodeNumber ?? ep.ep ?? idx + 1,
+      title: ep.title || ep.name || '',
+      filler: Boolean(ep.filler),
+    }));
 }
 
 function attachProxyUrlsToPlayback(proxy, result, basePath = '/api/proxy') {
@@ -118,6 +310,13 @@ function attachProxyUrlsToPlayback(proxy, result, basePath = '/api/proxy') {
  */
 export function createAppServer(options = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const startedAt = Date.now();
+  const stats = {
+    requestsServed: 0,
+    streamsResolved: 0,
+    downloadsStarted: 0,
+  };
+
   const mirudl =
     options.mirudl ||
     new MiruDLClient({
@@ -156,6 +355,7 @@ export function createAppServer(options = {}) {
   const cooldownBook = new SourceCooldownBook();
 
   const server = http.createServer(async (req, res) => {
+    stats.requestsServed += 1;
     try {
       if (req.method === 'OPTIONS') {
         res.statusCode = 204;
@@ -170,12 +370,201 @@ export function createAppServer(options = {}) {
       const urlObj = new URL(req.url || '/', `http://${host}`);
       const pathname = urlObj.pathname;
 
-      // Healthcheck
-      if (req.method === 'GET' && pathname === '/api/health') {
+      // Health & Keep-Alive Endpoints (support GET and HEAD for Render/uptime monitors)
+      const isGetOrHead = req.method === 'GET' || req.method === 'HEAD';
+      if (isGetOrHead && pathname === '/ping') {
+        return sendJson(res, 200, { ok: true, ts: Date.now() }, req.method);
+      }
+      if (isGetOrHead && pathname === '/api/health') {
+        return sendJson(
+          res,
+          200,
+          {
+            ok: true,
+            uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+            startedAt: new Date(startedAt).toISOString(),
+            providers: ['anifam', 'mirudl', 'demo'],
+            anifamActiveOrigin: anifam.activeOrigin,
+            stats: { ...stats },
+          },
+          req.method
+        );
+      }
+
+      // ========================
+      // Demo HLS Showcase Endpoints
+      // ========================
+      if (req.method === 'GET' && pathname === '/api/demo/catalog') {
         return sendJson(res, 200, {
-          ok: true,
-          providers: ['mirudl', 'anifam'],
-          anifamActiveOrigin: anifam.activeOrigin,
+          provider: 'demo',
+          sections: [
+            {
+              title: 'Demo HLS Showcase',
+              items: DEMO_ANIME.map((a) => ({
+                id: a.id,
+                title: a.title,
+                subtitle: a.subtitle,
+                poster: '',
+              })),
+            },
+          ],
+          items: DEMO_ANIME.map((a) => ({
+            id: a.id,
+            title: a.title,
+            subtitle: a.subtitle,
+            poster: '',
+          })),
+        });
+      }
+      if (req.method === 'GET' && pathname.startsWith('/api/demo/episodes/')) {
+        const id = decodeURIComponent(pathname.slice('/api/demo/episodes/'.length));
+        const anime = DEMO_ANIME.find((a) => a.id === id) || DEMO_ANIME[0];
+        return sendJson(res, 200, {
+          episodes: anime.episodes.map(({ id: epId, number, title }) => ({
+            id: epId,
+            number,
+            title,
+          })),
+        });
+      }
+      if (req.method === 'GET' && pathname === '/api/demo/subs.vtt') {
+        res.statusCode = 200;
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+        res.end(DEMO_VTT);
+        return;
+      }
+      if (req.method === 'GET' && pathname === '/api/demo/play') {
+        const episodeId = urlObj.searchParams.get('episodeId') || 'demo-1';
+        const quality = urlObj.searchParams.get('quality') || '720p';
+        const ep =
+          DEMO_ANIME.flatMap((a) => a.episodes).find((e) => e.id === episodeId) ||
+          DEMO_ANIME[0].episodes[0];
+        stats.streamsResolved += 1;
+        const token = proxy.signTarget({
+          url: ep.streamUrl,
+          headers: { 'User-Agent': MIRUDL_CONSTANTS.HLS_UA },
+          unwrapTs: false,
+        });
+        return sendJson(res, 200, {
+          provider: 'demo',
+          mode: 'hls',
+          status: 'ready',
+          episodeId: ep.id,
+          title: ep.title,
+          streamUrl: ep.streamUrl,
+          proxyHlsUrl: `/api/proxy/hls?token=${encodeURIComponent(token)}`,
+          downloadUrl: `/api/download?token=${encodeURIComponent(token)}&quality=${encodeURIComponent(quality)}`,
+          subtitles: [
+            {
+              lang: 'en',
+              label: 'English (Demo)',
+              proxyUrl: '/api/demo/subs.vtt',
+              default: true,
+            },
+          ],
+          skip: { intro: { start: 3, end: 12 } },
+          unwrapTs: false,
+        });
+      }
+
+      // ========================
+      // Normalized Catalog Endpoints (Frontend Convenience)
+      // ========================
+      if (req.method === 'GET' && pathname === '/api/catalog/home') {
+        const provider = (urlObj.searchParams.get('provider') || 'anifam').toLowerCase();
+        if (provider === 'demo') {
+          return sendJson(res, 200, {
+            provider: 'demo',
+            sections: [
+              {
+                title: 'Demo HLS Showcase',
+                items: DEMO_ANIME.map((a) => ({
+                  id: a.id,
+                  title: a.title,
+                  subtitle: a.subtitle,
+                  poster: '',
+                })),
+              },
+            ],
+            items: DEMO_ANIME.map((a) => ({
+              id: a.id,
+              title: a.title,
+              subtitle: a.subtitle,
+              poster: '',
+            })),
+          });
+        }
+        if (provider === 'mirudl') {
+          const sections = await mirudl.getHomeSections();
+          const enrichPool = [];
+          for (const sec of sections) {
+            for (const p of sec.posts || []) {
+              if (!p.title && enrichPool.length < 18) enrichPool.push(p);
+            }
+          }
+          if (enrichPool.length) {
+            await mirudl.enrichTitles(enrichPool, 6).catch(() => {});
+          }
+          return sendJson(res, 200, normalizeCatalogSections({ sections }, 'mirudl'));
+        }
+        const raw = await anifam.getHome();
+        return sendJson(res, 200, normalizeCatalogSections(raw, 'anifam'));
+      }
+
+      if (req.method === 'GET' && pathname === '/api/catalog/search') {
+        const provider = (urlObj.searchParams.get('provider') || 'anifam').toLowerCase();
+        const q = urlObj.searchParams.get('q') || '';
+        const page = Number(urlObj.searchParams.get('page') || 1);
+        if (provider === 'demo') {
+          const filtered = DEMO_ANIME.filter((a) =>
+            a.title.toLowerCase().includes(q.toLowerCase())
+          );
+          const list = (filtered.length ? filtered : DEMO_ANIME).map((a) => ({
+            id: a.id,
+            title: a.title,
+            subtitle: a.subtitle,
+            poster: '',
+          }));
+          return sendJson(res, 200, { provider: 'demo', items: list });
+        }
+        if (provider === 'mirudl') {
+          const results = await mirudl.search(q, page);
+          return sendJson(res, 200, {
+            provider: 'mirudl',
+            items: results.map((r, i) => normalizeAnimeItem(r, i)).filter(Boolean),
+          });
+        }
+        const raw = await anifam.search(q, page);
+        const list = extractItemArray(raw).map((r, i) => normalizeAnimeItem(r, i)).filter(Boolean);
+        return sendJson(res, 200, { provider: 'anifam', items: list });
+      }
+
+      if (req.method === 'GET' && pathname === '/api/catalog/episodes') {
+        const provider = (urlObj.searchParams.get('provider') || 'anifam').toLowerCase();
+        const animeId = urlObj.searchParams.get('animeId') || '';
+        if (!animeId) return sendJson(res, 400, { error: 'animeId is required' });
+        if (provider === 'demo') {
+          const anime = DEMO_ANIME.find((a) => a.id === animeId) || DEMO_ANIME[0];
+          return sendJson(res, 200, {
+            provider: 'demo',
+            animeId: anime.id,
+            episodes: anime.episodes.map(({ id, number, title }) => ({ id, number, title })),
+          });
+        }
+        if (provider === 'mirudl') {
+          const eps = await mirudl.getEpisodes(animeId);
+          return sendJson(res, 200, {
+            provider: 'mirudl',
+            animeId,
+            episodes: normalizeEpisodesPayload(eps),
+          });
+        }
+        const raw = await anifam.getEpisodes(animeId);
+        return sendJson(res, 200, {
+          provider: 'anifam',
+          animeId,
+          episodes: normalizeEpisodesPayload(raw),
         });
       }
 
@@ -184,6 +573,17 @@ export function createAppServer(options = {}) {
       // ========================
       if (req.method === 'GET' && pathname === '/api/mirudl/home') {
         const sections = await mirudl.getHomeSections();
+        if (urlObj.searchParams.get('enrich') !== '0') {
+          const enrichPool = [];
+          for (const sec of sections) {
+            for (const p of sec.posts || []) {
+              if (!p.title && enrichPool.length < 18) enrichPool.push(p);
+            }
+          }
+          if (enrichPool.length) {
+            await mirudl.enrichTitles(enrichPool, 6).catch(() => {});
+          }
+        }
         return sendJson(res, 200, { sections });
       }
       if (req.method === 'GET' && pathname === '/api/mirudl/categories') {
@@ -212,6 +612,7 @@ export function createAppServer(options = {}) {
         const language = urlObj.searchParams.get('lang') || 'jpn';
         const preferredQuality = urlObj.searchParams.get('quality') || '1080p';
         const playback = await mirudl.resolvePlayback(episodeId, { language, preferredQuality });
+        stats.streamsResolved += 1;
 
         const targetUrl =
           preferredQuality.toLowerCase() === 'auto' ? playback.masterUrl : playback.selectedUrl;
@@ -273,7 +674,6 @@ export function createAppServer(options = {}) {
 
         let result;
         if (Number.isInteger(body.serverIndex)) {
-          // Initialize lists first, then jump to requested server index
           controller.episodeId = playbackDto.episodeId;
           controller.track = playbackDto.track || track;
           controller.sources = filterAndSortSources(playbackDto.sources);
@@ -287,8 +687,8 @@ export function createAppServer(options = {}) {
         } else {
           result = await controller.loadPlaybackDto(playbackDto);
         }
+        stats.streamsResolved += 1;
 
-        // Attach signed proxy URLs to every server so the browser can switch or fall back cleanly
         const decorated = attachProxyUrlsToPlayback(proxy, result);
         return sendJson(res, 200, {
           ...decorated,
@@ -319,6 +719,7 @@ export function createAppServer(options = {}) {
         const track = body.track || 'sub';
         const resolved = await anifam.resolveIframeSource(body.episodeId, body.serverId, track);
         const candidateUrls = collectCandidateUrls(resolved);
+        stats.streamsResolved += 1;
         const payload = attachProxyUrlsToPlayback(proxy, {
           status: 'ready',
           mode: 'resolved_hls',
@@ -370,7 +771,7 @@ export function createAppServer(options = {}) {
       }
 
       // ========================
-      // Media Proxy Endpoints
+      // Media & Image Proxy Endpoints
       // ========================
       if (req.method === 'POST' && pathname === '/api/proxy/sign') {
         const body = await readJsonBody(req);
@@ -387,6 +788,34 @@ export function createAppServer(options = {}) {
           proxySegmentUrl: `/api/proxy/segment?token=${encodeURIComponent(token)}`,
           downloadUrl: `/api/download?token=${encodeURIComponent(token)}`,
         });
+      }
+
+      if (req.method === 'GET' && pathname === '/api/proxy/image') {
+        const targetUrl = urlObj.searchParams.get('url');
+        if (!isSafePublicHttpsUrl(targetUrl)) {
+          return sendJson(res, 400, { error: 'Invalid or disallowed image URL' });
+        }
+        const upstream = await fetchImpl(targetUrl, {
+          method: 'GET',
+          headers: {
+            'User-Agent': MIRUDL_CONSTANTS.ANILAB_UA,
+            Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+          },
+        });
+        if (!upstream.ok) {
+          return sendJson(res, upstream.status, { error: `Image upstream HTTP ${upstream.status}` });
+        }
+        const ct = upstream.headers.get('content-type') || 'image/jpeg';
+        if (!ct.toLowerCase().startsWith('image/')) {
+          return sendJson(res, 415, { error: 'Upstream URL did not return an image' });
+        }
+        res.statusCode = 200;
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Type', ct);
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        const bodyStream = upstream.body ? Readable.fromWeb(upstream.body) : Readable.from(Buffer.alloc(0));
+        await pipeline(bodyStream, res);
+        return;
       }
 
       if (req.method === 'GET' && pathname === '/api/proxy/hls') {
@@ -451,6 +880,12 @@ export function createAppServer(options = {}) {
               headers = source.mediaHeaders || {};
               unwrapTs = false;
             }
+          } else if (provider === 'demo') {
+            const ep =
+              DEMO_ANIME.flatMap((a) => a.episodes).find((e) => e.id === episodeId) ||
+              DEMO_ANIME[0].episodes[0];
+            playlistUrl = ep.streamUrl;
+            headers = { 'User-Agent': MIRUDL_CONSTANTS.HLS_UA };
           } else if (proxy.allowUnsignedDev && urlObj.searchParams.get('url')) {
             playlistUrl = urlObj.searchParams.get('url');
             unwrapTs = urlObj.searchParams.get('unwrapTs') === '1';
@@ -469,6 +904,7 @@ export function createAppServer(options = {}) {
           });
         }
 
+        stats.downloadsStarted += 1;
         const abortController = new AbortController();
         req.on('close', () => abortController.abort());
 
@@ -499,11 +935,11 @@ export function createAppServer(options = {}) {
       // ========================
       // Static Web Frontend
       // ========================
-      if (req.method === 'GET') {
+      if (req.method === 'GET' || req.method === 'HEAD') {
         const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
         const resolvedPath = path.resolve(publicDir, rel);
         if (!resolvedPath.startsWith(publicDir + path.sep) && resolvedPath !== publicDir) {
-          return sendJson(res, 403, { error: 'Forbidden' });
+          return sendJson(res, 403, { error: 'Forbidden' }, req.method);
         }
         try {
           const stat = await fs.stat(resolvedPath);
@@ -511,6 +947,11 @@ export function createAppServer(options = {}) {
             const ext = path.extname(resolvedPath).toLowerCase();
             res.statusCode = 200;
             res.setHeader('Content-Type', MIME_TYPES[ext] || 'application/octet-stream');
+            res.setHeader('Content-Length', String(stat.size));
+            if (req.method === 'HEAD') {
+              res.end();
+              return;
+            }
             res.end(await fs.readFile(resolvedPath));
             return;
           }
@@ -543,5 +984,14 @@ if (isMain) {
   const { server } = createAppServer();
   server.listen(port, host, () => {
     console.log(`Anime Stream & Download SDK listening at http://${host}:${port}`);
+    const keepAliveTarget = process.env.SELF_PING_URL || process.env.RENDER_EXTERNAL_URL;
+    if (process.env.ENABLE_KEEPALIVE === 'true' && keepAliveTarget) {
+      const intervalMs = Number(process.env.SELF_PING_INTERVAL_MS || 14 * 60 * 1000);
+      const pingUrl = `${keepAliveTarget.replace(/\/+$/, '')}/ping`;
+      const timer = setInterval(() => {
+        fetch(pingUrl).catch(() => {});
+      }, intervalMs);
+      timer.unref();
+    }
   });
 }

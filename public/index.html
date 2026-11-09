@@ -3,19 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MiruDL + AniFam Web Streaming &amp; Download Integration</title>
+  <title>MiruDL + AniFam Anime Stream &amp; Download Server</title>
   <link rel="stylesheet" href="/styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js" defer></script>
+  <script type="module" src="/js/site-app.js"></script>
 </head>
 <body>
   <header class="topbar">
-    <div>
-      <h1>MiruDL + AniFam Web Integration</h1>
+    <div class="brand">
+      <div class="brand-row">
+        <h1>MiruDL + AniFam Stream &amp; Download</h1>
+        <span id="health-pill" class="health-pill">Checking server...</span>
+      </div>
       <p class="subtitle">Unified 3-Mode Streaming Proxy, Spoofed-TS Unwrapper &amp; Concurrent HLS Downloader</p>
     </div>
     <div class="provider-tabs">
       <button id="tab-anifam" class="tab active" type="button">AniFam (3-Mode)</button>
       <button id="tab-mirudl" class="tab" type="button">MiruDL (AniLab + Kyoto)</button>
+      <button id="tab-demo" class="tab" type="button">Demo HLS</button>
     </div>
   </header>
 
@@ -24,14 +29,19 @@
       <form id="search-form" class="row">
         <input id="search-input" type="search" placeholder="Search anime (e.g. frieren, one piece)..." required />
         <button type="submit">Search</button>
+        <button id="btn-reload-home" type="button" title="Reload Home Feed">Home</button>
       </form>
+      <div id="quick-tags" class="chips"></div>
       <div id="status-banner" class="status-banner" hidden></div>
+      <div class="section-head">
+        <h2 id="catalog-title">Catalog</h2>
+      </div>
       <div id="search-results" class="cards"></div>
     </section>
 
     <section class="panel details-panel">
       <h2>Episodes</h2>
-      <div id="anime-meta" class="muted">Select an anime from search results to load episodes.</div>
+      <div id="anime-meta" class="muted">Loading catalog...</div>
       <div id="episodes-list" class="episodes"></div>
     </section>
 
@@ -76,226 +86,12 @@
           <span id="dl-progress-text">0%</span>
         </div>
       </div>
+
+      <details class="activity-box" open>
+        <summary>Live Server &amp; Player Activity</summary>
+        <ul id="activity-log" class="activity-log"></ul>
+      </details>
     </section>
   </main>
-
-  <script type="module">
-    import { AnimeSitePlayer } from '/js/site-player.js';
-    import { WebEpisodeDownloader } from '/js/web-downloader.js';
-
-    let currentProvider = 'anifam';
-    let currentEpisode = null;
-    let currentSession = null;
-    let downloadAbort = null;
-    let activeSkipCue = null;
-
-    const videoEl = document.getElementById('video-player');
-    const iframeEl = document.getElementById('embed-player');
-    const skipBtn = document.getElementById('skip-btn');
-    const statusBanner = document.getElementById('status-banner');
-    const serverBar = document.getElementById('server-bar');
-    const modeBadge = document.getElementById('player-mode-badge');
-    const trackSelect = document.getElementById('track-select');
-    const qualitySelect = document.getElementById('quality-select');
-    const btnDlServer = document.getElementById('btn-dl-server');
-    const btnDlBrowser = document.getElementById('btn-dl-browser');
-    const btnDlCancel = document.getElementById('btn-dl-cancel');
-    const dlProgressWrap = document.getElementById('dl-progress-wrap');
-    const dlProgress = document.getElementById('dl-progress');
-    const dlProgressText = document.getElementById('dl-progress-text');
-
-    const downloader = new WebEpisodeDownloader();
-    const player = new AnimeSitePlayer({
-      videoEl,
-      iframeEl,
-      onStateChange: (state) => {
-        currentSession = state;
-        modeBadge.hidden = false;
-        modeBadge.textContent = `${state.provider.toUpperCase()} • ${state.mode || state.status}`;
-        renderServerBar(state);
-        const canDownload = Boolean(state.downloadUrl || state.proxyHlsUrl);
-        btnDlServer.disabled = !canDownload;
-        btnDlBrowser.disabled = !state.proxyHlsUrl;
-      },
-      onSkipCue: (cue) => {
-        activeSkipCue = cue;
-        if (!cue) {
-          skipBtn.hidden = true;
-          return;
-        }
-        skipBtn.hidden = false;
-        skipBtn.textContent = cue.type === 'intro' ? 'Skip Intro' : 'Skip Outro';
-      },
-      onError: (err) => showStatus(err.message, true),
-    });
-
-    skipBtn.addEventListener('click', () => {
-      if (activeSkipCue) player.jumpToSeconds(activeSkipCue.end);
-    });
-
-    function showStatus(msg, isError = false) {
-      statusBanner.hidden = !msg;
-      statusBanner.textContent = msg || '';
-      statusBanner.classList.toggle('error', isError);
-    }
-
-    function renderServerBar(state) {
-      serverBar.innerHTML = '';
-      if (!state?.servers?.length) return;
-      for (const s of state.servers) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'server-chip' + (s.index === state.sourceIndex ? ' active' : '');
-        btn.textContent = s.isWebOnly ? `${s.label} [Web]` : s.label;
-        btn.addEventListener('click', () => {
-          if (currentEpisode) {
-            player.playAniFam(currentEpisode.id, {
-              track: trackSelect.value,
-              serverIndex: s.index,
-            }).catch((err) => showStatus(err.message, true));
-          }
-        });
-        serverBar.appendChild(btn);
-      }
-    }
-
-    document.getElementById('tab-anifam').addEventListener('click', () => setProvider('anifam'));
-    document.getElementById('tab-mirudl').addEventListener('click', () => setProvider('mirudl'));
-
-    function setProvider(p) {
-      currentProvider = p;
-      document.getElementById('tab-anifam').classList.toggle('active', p === 'anifam');
-      document.getElementById('tab-mirudl').classList.toggle('active', p === 'mirudl');
-      document.getElementById('search-results').innerHTML = '';
-      document.getElementById('episodes-list').innerHTML = '';
-      showStatus('');
-    }
-
-    document.getElementById('search-form').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const q = document.getElementById('search-input').value.trim();
-      if (!q) return;
-      showStatus(`Searching ${currentProvider}...`);
-      try {
-        const endpoint =
-          currentProvider === 'mirudl'
-            ? `/api/mirudl/search?q=${encodeURIComponent(q)}`
-            : `/api/anifam/search?q=${encodeURIComponent(q)}`;
-        const res = await fetch(endpoint);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        const list = data.results || data.data || [];
-        showStatus(list.length ? '' : 'No results found');
-        renderAnimeList(list);
-      } catch (err) {
-        showStatus(err.message, true);
-      }
-    });
-
-    function renderAnimeList(list) {
-      const container = document.getElementById('search-results');
-      container.innerHTML = '';
-      for (const item of list) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'card';
-        btn.innerHTML = `<strong>${escapeHtml(item.title || item.name || item.slug || 'Anime #' + item.id)}</strong><span>ID: ${escapeHtml(String(item.id))}</span>`;
-        btn.addEventListener('click', () => loadEpisodes(item));
-        container.appendChild(btn);
-      }
-    }
-
-    async function loadEpisodes(anime) {
-      document.getElementById('anime-meta').textContent = anime.title || anime.name || `Anime ${anime.id}`;
-      showStatus('Loading episodes...');
-      try {
-        const endpoint =
-          currentProvider === 'mirudl'
-            ? `/api/mirudl/episodes/${encodeURIComponent(anime.id)}`
-            : `/api/anifam/episodes/${encodeURIComponent(anime.id)}`;
-        const res = await fetch(endpoint);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        const eps = data.episodes || data.data || [];
-        showStatus('');
-        const listEl = document.getElementById('episodes-list');
-        listEl.innerHTML = '';
-        for (const ep of eps) {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'ep-btn';
-          btn.textContent = `EP ${ep.number ?? ''} ${ep.title ? '• ' + ep.title : ''}`.trim();
-          btn.addEventListener('click', () => startEpisode(anime, ep));
-          listEl.appendChild(btn);
-        }
-      } catch (err) {
-        showStatus(err.message, true);
-      }
-    }
-
-    async function startEpisode(anime, ep) {
-      currentEpisode = { ...ep, animeTitle: anime.title || anime.name || 'Anime' };
-      document.getElementById('player-title').textContent = `${currentEpisode.animeTitle} — EP ${ep.number ?? ep.id}`;
-      showStatus('Resolving playback source...');
-      try {
-        if (currentProvider === 'mirudl') {
-          const lang = trackSelect.value === 'dub' ? 'eng' : 'jpn';
-          await player.playMiruDL(ep.id, { lang, quality: qualitySelect.value });
-        } else {
-          await player.playAniFam(ep.id, { track: trackSelect.value });
-        }
-        showStatus('');
-      } catch (err) {
-        showStatus(err.message, true);
-      }
-    }
-
-    btnDlServer.addEventListener('click', () => {
-      if (!currentSession) return;
-      const title = `${currentEpisode?.animeTitle || 'anime'}-ep-${currentEpisode?.number || currentEpisode?.id || 1}`;
-      downloader.triggerServerDownload({
-        downloadUrl: currentSession.downloadUrl,
-        quality: qualitySelect.value,
-        title,
-      });
-    });
-
-    btnDlBrowser.addEventListener('click', async () => {
-      if (!currentSession?.proxyHlsUrl) return;
-      downloadAbort = new AbortController();
-      dlProgressWrap.hidden = false;
-      btnDlCancel.hidden = false;
-      btnDlBrowser.disabled = true;
-      const title = `${currentEpisode?.animeTitle || 'anime'}-ep-${currentEpisode?.number || currentEpisode?.id || 1}`;
-
-      try {
-        await downloader.downloadInBrowserWithProgress({
-          proxyHlsUrl: currentSession.proxyHlsUrl,
-          preferredQuality: qualitySelect.value,
-          filename: `${title}.mp4`,
-          signal: downloadAbort.signal,
-          onProgress: (p) => {
-            dlProgress.value = p.percent;
-            const mb = (p.bytesDownloaded / (1024 * 1024)).toFixed(1);
-            const mbps = ((p.speedBytesPerSec * 8) / 1_000_000).toFixed(1);
-            dlProgressText.textContent = `${p.percent}% (${p.completed}/${p.total} segs • ${mb} MB • ${mbps} Mbps • ${p.quality})`;
-          },
-        });
-      } catch (err) {
-        showStatus(err.name === 'AbortError' ? 'Download cancelled' : err.message, err.name !== 'AbortError');
-      } finally {
-        btnDlCancel.hidden = true;
-        btnDlBrowser.disabled = false;
-      }
-    });
-
-    btnDlCancel.addEventListener('click', () => {
-      if (downloadAbort) downloadAbort.abort();
-    });
-
-    function escapeHtml(str) {
-      return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    }
-  </script>
 </body>
 </html>

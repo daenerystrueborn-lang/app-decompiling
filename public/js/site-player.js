@@ -58,7 +58,8 @@ export class AnimeSitePlayer {
       trackEl.kind = 'subtitles';
       trackEl.label = sub.label || sub.lang || 'Subtitles';
       trackEl.srclang = sub.lang || 'en';
-      trackEl.src = `${this.apiBase}${sub.proxyUrl || sub.url}`;
+      const rawSrc = sub.proxyUrl || sub.url;
+      trackEl.src = rawSrc.startsWith('http') ? rawSrc : `${this.apiBase}${rawSrc}`;
       if (sub.default) trackEl.default = true;
       this.videoEl.appendChild(trackEl);
     }
@@ -237,6 +238,32 @@ export class AnimeSitePlayer {
       this.onError(err);
     });
 
+    if (Array.isArray(data.subtitles) && data.subtitles.length) {
+      this._attachSubtitles(data.subtitles);
+    }
+    return state;
+  }
+
+  /**
+   * Load and play a showcase/demo HLS episode via `/api/demo/play`.
+   */
+  async playDemo(episodeId = 'demo-1', options = {}) {
+    const qs = new URLSearchParams({
+      episodeId: String(episodeId),
+      quality: options.quality || '720p',
+    });
+    const res = await fetch(`${this.apiBase}/api/demo/play?${qs}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    const state = {
+      provider: 'demo',
+      mode: 'hls',
+      status: 'ready',
+      ...data,
+    };
+    this._emit(state);
+    this._mountHlsUrl(data.proxyHlsUrl, (err) => this.onError(err));
     if (Array.isArray(data.subtitles) && data.subtitles.length) {
       this._attachSubtitles(data.subtitles);
     }

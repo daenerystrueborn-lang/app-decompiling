@@ -8,10 +8,66 @@
   "paths": {
     "/api/health": {
       "get": {
-        "summary": "Server health & active AniFam failover domain",
+        "summary": "Server health, uptime, active AniFam failover domain & stream/download metrics",
         "responses": {
           "200": { "description": "Server is healthy" }
         }
+      }
+    },
+    "/ping": {
+      "get": {
+        "summary": "Lightweight uptime / keep-alive ping endpoint",
+        "responses": {
+          "200": { "description": "Pong" }
+        }
+      }
+    },
+    "/api/catalog/home": {
+      "get": {
+        "summary": "Normalized home catalog items & sections for AniFam, MiruDL, or Demo HLS",
+        "parameters": [
+          { "name": "provider", "in": "query", "schema": { "type": "string", "enum": ["anifam", "mirudl", "demo"], "default": "anifam" } }
+        ],
+        "responses": { "200": { "description": "Normalized catalog sections and items" } }
+      }
+    },
+    "/api/catalog/search": {
+      "get": {
+        "summary": "Normalized anime search across AniFam, MiruDL, or Demo HLS",
+        "parameters": [
+          { "name": "provider", "in": "query", "schema": { "type": "string", "enum": ["anifam", "mirudl", "demo"], "default": "anifam" } },
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Normalized anime items" } }
+      }
+    },
+    "/api/catalog/episodes": {
+      "get": {
+        "summary": "Normalized episode list for an anime ID",
+        "parameters": [
+          { "name": "provider", "in": "query", "schema": { "type": "string", "enum": ["anifam", "mirudl", "demo"], "default": "anifam" } },
+          { "name": "animeId", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Normalized episodes" } }
+      }
+    },
+    "/api/demo/play": {
+      "get": {
+        "summary": "Resolve Demo HLS showcase stream with signed proxy & download URLs",
+        "parameters": [
+          { "name": "episodeId", "in": "query", "schema": { "type": "string", "default": "demo-1" } },
+          { "name": "quality", "in": "query", "schema": { "type": "string", "default": "720p" } }
+        ],
+        "responses": { "200": { "description": "Demo HLS playback session" } }
+      }
+    },
+    "/api/proxy/image": {
+      "get": {
+        "summary": "SSRF-guarded HTTPS poster image proxy with CORS and caching headers",
+        "parameters": [
+          { "name": "url", "in": "query", "required": true, "schema": { "type": "string", "format": "uri" } }
+        ],
+        "responses": { "200": { "description": "Proxied image asset" } }
       }
     },
     "/api/mirudl/home": {
