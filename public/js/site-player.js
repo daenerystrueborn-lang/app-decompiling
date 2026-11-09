@@ -6,7 +6,8 @@
  *  - Plays AniFam's 3 modes via `/api/anifam/play`:
  *      1) `hls` (Direct HLS via `hls.js` / native Safari HLS)
  *      2) `resolved_hls` (Iframe-resolved HLS unwrapped server-side by `TsUnwrapperTransform`)
- *      3) `iframe` (WebView/Embed fallback rendered in sandboxed `<iframe>`)
+ *      3) `iframe` (WebView/Embed fallback rendered in an unsandboxed `<iframe>` so upstream
+ *         embed players like megaplay.buzz do not reject playback)
  *  - Automatic server fallback on fatal playback errors
  *  - WebVTT subtitle injection (`<track>`) + intro/outro skip cues (`skip.intro`, `skip.outro`).
  */
@@ -18,6 +19,7 @@ export class AnimeSitePlayer {
    *   iframeEl?: HTMLIFrameElement | null,
    *   apiBase?: string,
    *   hlsConstructor?: any,
+   *   iframeSandbox?: string | null,
    *   onStateChange?: (state: any) => void,
    *   onSkipCue?: (cue: { type: 'intro'|'outro', start: number, end: number } | null) => void,
    *   onError?: (err: Error) => void,
@@ -28,6 +30,7 @@ export class AnimeSitePlayer {
     this.iframeEl = options.iframeEl || null;
     this.apiBase = (options.apiBase || '').replace(/\/+$/, '');
     this.Hls = options.hlsConstructor ?? globalThis.Hls ?? null;
+    this.iframeSandbox = options.iframeSandbox || null;
     this.onStateChange = options.onStateChange || (() => {});
     this.onSkipCue = options.onSkipCue || (() => {});
     this.onError = options.onError || (() => {});
@@ -122,11 +125,15 @@ export class AnimeSitePlayer {
     }
     this.videoEl.hidden = true;
     this.iframeEl.hidden = false;
-    this.iframeEl.setAttribute(
-      'sandbox',
-      'allow-scripts allow-same-origin allow-presentation allow-forms'
-    );
-    this.iframeEl.setAttribute('allow', 'autoplay; fullscreen; encrypted-media');
+    // Upstream anime embed players reject sandboxed frames ("Remove sandbox to use it.")
+    if (this.iframeSandbox) {
+      this.iframeEl.setAttribute('sandbox', this.iframeSandbox);
+    } else {
+      this.iframeEl.removeAttribute('sandbox');
+    }
+    this.iframeEl.setAttribute('allow', 'autoplay; fullscreen; encrypted-media; picture-in-picture');
+    this.iframeEl.setAttribute('allowfullscreen', '');
+    this.iframeEl.referrerPolicy = 'origin';
     this.iframeEl.src = embedUrl;
   }
 

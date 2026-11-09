@@ -63,8 +63,19 @@ body {
   padding: 0.48rem 0.85rem;
 }
 button { cursor: pointer; transition: border-color 0.15s, background 0.15s; }
-button:hover:not(:disabled) { border-color: #58a6ff; }
+button:hover:not(:disabled), .link-btn:hover { border-color: #58a6ff; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
+.link-btn {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0.48rem 0.85rem;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
 .tab.active { background: var(--accent); border-color: var(--accent); }
 
 .layout {
@@ -129,6 +140,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   background: rgba(59, 130, 246, 0.16);
 }
 .poster {
+  display: block;
+  min-width: 44px;
   width: 44px;
   height: 62px;
   object-fit: cover;

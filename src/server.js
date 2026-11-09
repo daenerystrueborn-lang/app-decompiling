@@ -47,7 +47,7 @@ const DEMO_ANIME = [
     id: 'demo-bbb',
     title: 'Big Buck Bunny (Demo HLS Showcase)',
     subtitle: 'Multi-Quality Adaptive HLS • 1080p / 720p / 480p / 360p',
-    poster: '',
+    poster: '/api/demo/poster-bbb.svg',
     episodes: [
       {
         id: 'demo-1',
@@ -64,6 +64,20 @@ const DEMO_ANIME = [
     ],
   },
 ];
+
+const DEMO_POSTER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 340">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1e3a8a"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+  <rect width="240" height="340" rx="16" fill="url(#g)"/>
+  <circle cx="120" cy="135" r="46" fill="rgba(59,130,246,0.28)" stroke="#60a5fa" stroke-width="3"/>
+  <polygon points="108,114 148,135 108,156" fill="#e6edf3"/>
+  <text x="120" y="232" font-family="system-ui,sans-serif" font-weight="700" font-size="18" fill="#f8fafc" text-anchor="middle">DEMO HLS</text>
+  <text x="120" y="256" font-family="system-ui,sans-serif" font-size="13" fill="#93c5fd" text-anchor="middle">1080p Adaptive Showcase</text>
+</svg>`;
 
 const DEMO_VTT = `WEBVTT
 
@@ -102,10 +116,10 @@ async function readJsonBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
-export function isSafePublicHttpsUrl(rawUrl) {
+export function isSafePublicImageUrl(rawUrl) {
   try {
     const u = new URL(String(rawUrl));
-    if (u.protocol !== 'https:') return false;
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
     const host = u.hostname.toLowerCase();
     if (!host || !host.includes('.')) return false;
     if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return false;
@@ -124,46 +138,109 @@ export function isSafePublicHttpsUrl(rawUrl) {
   }
 }
 
-function toProxiedPoster(url) {
-  if (!url || !String(url).trim()) return '';
-  const s = String(url).trim();
-  if (s.startsWith('/')) return s;
-  if (isSafePublicHttpsUrl(s)) {
-    return `/api/proxy/image?url=${encodeURIComponent(s)}`;
+export function isSafePublicHttpsUrl(rawUrl) {
+  try {
+    return new URL(String(rawUrl)).protocol === 'https:' && isSafePublicImageUrl(rawUrl);
+  } catch {
+    return false;
+  }
+}
+
+function extractRawPoster(raw) {
+  const candidates = [
+    raw.poster,
+    raw.posterUrl,
+    raw.poster_url,
+    raw.posterImage,
+    raw.poster_image,
+    raw.cover,
+    raw.coverUrl,
+    raw.cover_url,
+    raw.coverImage,
+    raw.cover_image,
+    raw.thumbnail,
+    raw.thumb,
+    raw.thumbUrl,
+    raw.thumb_url,
+    raw.image,
+    raw.imageUrl,
+    raw.image_url,
+    raw.banner,
+    raw.bannerUrl,
+    raw.picture,
+    raw.artwork,
+    raw.img,
+    raw.small_poster,
+    raw.images?.jpg?.large_image_url,
+    raw.images?.jpg?.image_url,
+    raw.images?.webp?.image_url,
+  ];
+  for (const val of candidates) {
+    if (!val) continue;
+    if (typeof val === 'string' && val.trim()) return val.trim();
+    if (typeof val === 'object') {
+      const nested = val.extraLarge || val.large || val.medium || val.url || val.src || val.path;
+      if (typeof nested === 'string' && nested.trim()) return nested.trim();
+    }
   }
   return '';
 }
 
-function normalizeAnimeItem(raw, fallbackIdx = 0) {
+function resolvePosterUrls(rawUrl, originBase = '') {
+  if (!rawUrl || !String(rawUrl).trim()) {
+    return { poster: '', posterProxy: '' };
+  }
+  let s = String(rawUrl).trim();
+  if (s.startsWith('data:image/')) {
+    return { poster: s, posterProxy: '' };
+  }
+  if (s.startsWith('/api/')) {
+    return { poster: s, posterProxy: '' };
+  }
+  if (s.startsWith('//')) {
+    s = `https:${s}`;
+  } else if (s.startsWith('/') && originBase) {
+    s = `${originBase.replace(/\/+$/, '')}${s}`;
+  } else if (!/^https?:\/\//i.test(s) && originBase) {
+    s = `${originBase.replace(/\/+$/, '')}/${s.replace(/^\/+/, '')}`;
+  }
+
+  if (!isSafePublicImageUrl(s)) {
+    return { poster: '', posterProxy: '' };
+  }
+  const proxied = `/api/proxy/image?url=${encodeURIComponent(s)}`;
+  const direct = s.startsWith('https://') ? s : proxied;
+  return { poster: direct, posterProxy: proxied };
+}
+
+function normalizeAnimeItem(raw, fallbackIdx = 0, originBase = '') {
   if (!raw || typeof raw !== 'object') return null;
-  const id = raw.id ?? raw.animeId ?? raw.slug ?? raw.malId ?? String(fallbackIdx + 1);
+  const node =
+    raw.anime && typeof raw.anime === 'object'
+      ? { ...raw.anime, ...raw, poster: extractRawPoster(raw) || extractRawPoster(raw.anime) }
+      : raw;
+
+  const id = node.id ?? node.animeId ?? node.slug ?? node.malId ?? String(fallbackIdx + 1);
   const title =
-    raw.title ||
-    raw.name ||
-    raw.englishTitle ||
-    raw.romajiTitle ||
-    raw.slug ||
+    node.title ||
+    node.name ||
+    node.englishTitle ||
+    node.romajiTitle ||
+    node.slug ||
     `Anime #${id}`;
-  const rawPoster =
-    raw.poster ||
-    raw.thumbnail ||
-    raw.cover ||
-    raw.coverImage ||
-    raw.image ||
-    raw.posterUrl ||
-    raw.banner ||
-    raw.img ||
-    '';
-  const epCount = raw.episodesCount ?? raw.totalEpisodes ?? raw.episodes_count ?? raw.subCount ?? null;
+  const rawPoster = extractRawPoster(node);
+  const { poster, posterProxy } = resolvePosterUrls(rawPoster, originBase);
+  const epCount = node.episodesCount ?? node.totalEpisodes ?? node.episodes_count ?? node.subCount ?? null;
   const subtitle =
-    raw.subtitle ||
-    (epCount ? `${epCount} eps` : raw.type || raw.year || raw.status || '');
+    node.subtitle ||
+    (epCount ? `${epCount} eps` : node.type || node.year || node.status || '');
 
   return {
     id: String(id),
     title: String(title),
     subtitle: subtitle ? String(subtitle) : '',
-    poster: toProxiedPoster(rawPoster),
+    poster,
+    posterProxy,
   };
 }
 
@@ -181,13 +258,13 @@ function extractItemArray(payload) {
   return [];
 }
 
-function normalizeCatalogSections(payload, provider) {
+function normalizeCatalogSections(payload, provider, originBase = '') {
   const sections = [];
   const pushSection = (title, rawList) => {
     const seen = new Set();
     const items = [];
     for (let i = 0; i < (rawList || []).length; i++) {
-      const item = normalizeAnimeItem(rawList[i], i);
+      const item = normalizeAnimeItem(rawList[i], i, originBase);
       if (!item || seen.has(item.id)) continue;
       seen.add(item.id);
       items.push(item);
@@ -394,6 +471,18 @@ export function createAppServer(options = {}) {
       // ========================
       // Demo HLS Showcase Endpoints
       // ========================
+      if ((req.method === 'GET' || req.method === 'HEAD') && pathname === '/api/demo/poster-bbb.svg') {
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+        res.setHeader('Content-Length', String(Buffer.byteLength(DEMO_POSTER_SVG)));
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        if (req.method === 'HEAD') {
+          res.end();
+          return;
+        }
+        res.end(DEMO_POSTER_SVG);
+        return;
+      }
       if (req.method === 'GET' && pathname === '/api/demo/catalog') {
         return sendJson(res, 200, {
           provider: 'demo',
@@ -404,7 +493,8 @@ export function createAppServer(options = {}) {
                 id: a.id,
                 title: a.title,
                 subtitle: a.subtitle,
-                poster: '',
+                poster: a.poster,
+                posterProxy: '',
               })),
             },
           ],
@@ -412,7 +502,8 @@ export function createAppServer(options = {}) {
             id: a.id,
             title: a.title,
             subtitle: a.subtitle,
-            poster: '',
+            poster: a.poster,
+            posterProxy: '',
           })),
         });
       }
@@ -483,7 +574,8 @@ export function createAppServer(options = {}) {
                   id: a.id,
                   title: a.title,
                   subtitle: a.subtitle,
-                  poster: '',
+                  poster: a.poster,
+                  posterProxy: '',
                 })),
               },
             ],
@@ -491,7 +583,8 @@ export function createAppServer(options = {}) {
               id: a.id,
               title: a.title,
               subtitle: a.subtitle,
-              poster: '',
+              poster: a.poster,
+              posterProxy: '',
             })),
           });
         }
@@ -506,10 +599,11 @@ export function createAppServer(options = {}) {
           if (enrichPool.length) {
             await mirudl.enrichTitles(enrichPool, 6).catch(() => {});
           }
-          return sendJson(res, 200, normalizeCatalogSections({ sections }, 'mirudl'));
+          const anilabOrigin = new URL(mirudl.anilabBase).origin;
+          return sendJson(res, 200, normalizeCatalogSections({ sections }, 'mirudl', anilabOrigin));
         }
         const raw = await anifam.getHome();
-        return sendJson(res, 200, normalizeCatalogSections(raw, 'anifam'));
+        return sendJson(res, 200, normalizeCatalogSections(raw, 'anifam', anifam.activeOrigin));
       }
 
       if (req.method === 'GET' && pathname === '/api/catalog/search') {
@@ -524,19 +618,23 @@ export function createAppServer(options = {}) {
             id: a.id,
             title: a.title,
             subtitle: a.subtitle,
-            poster: '',
+            poster: a.poster,
+            posterProxy: '',
           }));
           return sendJson(res, 200, { provider: 'demo', items: list });
         }
         if (provider === 'mirudl') {
           const results = await mirudl.search(q, page);
+          const anilabOrigin = new URL(mirudl.anilabBase).origin;
           return sendJson(res, 200, {
             provider: 'mirudl',
-            items: results.map((r, i) => normalizeAnimeItem(r, i)).filter(Boolean),
+            items: results.map((r, i) => normalizeAnimeItem(r, i, anilabOrigin)).filter(Boolean),
           });
         }
         const raw = await anifam.search(q, page);
-        const list = extractItemArray(raw).map((r, i) => normalizeAnimeItem(r, i)).filter(Boolean);
+        const list = extractItemArray(raw)
+          .map((r, i) => normalizeAnimeItem(r, i, anifam.activeOrigin))
+          .filter(Boolean);
         return sendJson(res, 200, { provider: 'anifam', items: list });
       }
 
@@ -792,22 +890,49 @@ export function createAppServer(options = {}) {
 
       if (req.method === 'GET' && pathname === '/api/proxy/image') {
         const targetUrl = urlObj.searchParams.get('url');
-        if (!isSafePublicHttpsUrl(targetUrl)) {
+        if (!isSafePublicImageUrl(targetUrl)) {
           return sendJson(res, 400, { error: 'Invalid or disallowed image URL' });
         }
-        const upstream = await fetchImpl(targetUrl, {
-          method: 'GET',
-          headers: {
-            'User-Agent': MIRUDL_CONSTANTS.ANILAB_UA,
-            Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-          },
-        });
+        const targetOrigin = new URL(targetUrl).origin;
+        const baseImgHeaders = {
+          'User-Agent': MIRUDL_CONSTANTS.ANILAB_UA,
+          Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        };
+        const fetchImageWithTimeout = async (extraHeaders = {}) => {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 10_000);
+          try {
+            return await fetchImpl(targetUrl, {
+              method: 'GET',
+              headers: { ...baseImgHeaders, ...extraHeaders },
+              signal: ctrl.signal,
+            });
+          } finally {
+            clearTimeout(timer);
+          }
+        };
+
+        let upstream = await fetchImageWithTimeout({ Referer: `${targetOrigin}/` });
+        if (upstream.status === 401 || upstream.status === 403) {
+          upstream = await fetchImageWithTimeout({});
+        }
         if (!upstream.ok) {
           return sendJson(res, upstream.status, { error: `Image upstream HTTP ${upstream.status}` });
         }
-        const ct = upstream.headers.get('content-type') || 'image/jpeg';
-        if (!ct.toLowerCase().startsWith('image/')) {
+
+        let ct = (upstream.headers.get('content-type') || '').toLowerCase();
+        const isGenericOctet = !ct || ct.includes('octet-stream');
+        if (!ct.startsWith('image/') && !isGenericOctet) {
           return sendJson(res, 415, { error: 'Upstream URL did not return an image' });
+        }
+        if (isGenericOctet) {
+          const lowerPath = new URL(targetUrl).pathname.toLowerCase();
+          if (lowerPath.endsWith('.png')) ct = 'image/png';
+          else if (lowerPath.endsWith('.webp')) ct = 'image/webp';
+          else if (lowerPath.endsWith('.avif')) ct = 'image/avif';
+          else if (lowerPath.endsWith('.gif')) ct = 'image/gif';
+          else if (lowerPath.endsWith('.svg')) ct = 'image/svg+xml';
+          else ct = 'image/jpeg';
         }
         res.statusCode = 200;
         res.setHeader('Access-Control-Allow-Origin', '*');

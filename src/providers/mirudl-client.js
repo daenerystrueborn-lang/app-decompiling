@@ -260,7 +260,7 @@ export class MiruDLClient {
         .map((p) => ({
           id: String(p.id),
           title: this._titleCache.get(String(p.id)) || p.title || '',
-          thumbnail: p.poster || '',
+          thumbnail: p.poster || p.thumbnail || p.image || p.cover || '',
           sourceId: 'anilab',
         }));
       if (items.length) {
@@ -290,7 +290,7 @@ export class MiruDLClient {
     const items = posts.map((p) => ({
       id: String(p.id),
       title: p.title || '',
-      thumbnail: p.poster || '',
+      thumbnail: p.poster || p.thumbnail || p.image || p.cover || '',
       sourceId: 'anilab',
     }));
     await this.enrichTitles(items);
@@ -304,7 +304,7 @@ export class MiruDLClient {
     const items = posts.map((p) => ({
       id: String(p.id),
       title: p.title || '',
-      thumbnail: p.poster || '',
+      thumbnail: p.poster || p.thumbnail || p.image || p.cover || '',
       sourceId: 'anilab',
     }));
     await this.enrichTitles(items);
@@ -354,6 +354,9 @@ export class MiruDLClient {
           const detail = await this.getAnimeDetails(item.id);
           if (detail?.title) {
             item.title = detail.title;
+          }
+          if (!item.thumbnail) {
+            item.thumbnail = detail?.poster || detail?.thumbnail || detail?.image || '';
           }
         } catch {
           // Best-effort enrichment, matches MiruClient.lambda$enrichTitles$0
